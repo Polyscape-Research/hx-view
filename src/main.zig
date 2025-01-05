@@ -57,10 +57,15 @@ pub fn main() !void {
 }
 
 fn input_handler(page: *std.ArrayList(Row), size: term_util.TermSize) !void {
+    var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = allocator.deinit();
+
     var term = try std.posix.tcgetattr(std.io.getStdIn().handle);
     term.lflag.ICANON = false;
     term.lflag.ECHO = false;
     try std.posix.tcsetattr(std.io.getStdIn().handle, .NOW, term);
+
+    const out = std.io.getStdOut().writer();
 
     while (true) {
         const k: u8 = std.io.getStdIn().reader().readByte() catch break;
@@ -81,9 +86,16 @@ fn input_handler(page: *std.ArrayList(Row), size: term_util.TermSize) !void {
                 try step_cursor_right(size);
             },
             'q' => {
-                const by: []const u8 = try get_word_at_cursor(page.items[top_page_index..bottom_page_index]);
-                try page.insert(bottom_page_index, .{ .buffer = by });
-                try update_screen(page, true);
+                const by: []const u8 =
+                    try get_word_at_cursor(page.items[top_page_index..bottom_page_index], allocator.allocator());
+                defer allocator.allocator().free(by);
+                var split_val = std.mem.splitBackwards(u8, by, "x");
+                const hex_string = split_val.next().?;
+
+                const decimal = try std.fmt.parseInt(i32, hex_string, 16);
+
+                try out.print("\x1B[{d};{d}H\x1B[2K Hex:{s} | Dec:{d}", .{ size.height + 2, 1, by, decimal });
+                try out.print("\x1B[{d};{d}H", .{ cursor.y, cursor.x });
             },
             else => {},
         }
@@ -145,7 +157,7 @@ fn ui_printer(fi: FileInfo) !void {
     var screen_page = page.items[top_page_index..bottom_page_index];
     try refresh_page(&screen_page);
 
-    try out.print("\x1B[{d};{d}H\x1B[30;44m Editing File {s} \x1B[34;40m File Size({d})\x1B[0m", .{ size.?.height + 1, 1, fi.file_name, fi.file_size });
+    try out.print("\x1B[{d};{d}H\x1B[30;44m Editing File {s} \x1B[34;40m File Size({d}) \x1B[0m", .{ size.?.height + 1, 1, fi.file_name, fi.file_size });
 
     try out.print("\x1B[{d};{d}H", .{ cursor.y, cursor.x });
 
@@ -342,20 +354,18 @@ fn print_byte_chars(row: []const u8, out: anytype) !void {
     }
 }
 
-fn get_word_at_cursor(page: []Row) ![]const u8 {
+fn get_word_at_cursor(page: []Row, allocator: std.mem.Allocator) ![]const u8 {
     const current_byte = try get_byte_at_cursor(page);
-    var row = page[@intCast(cursor.y - 1)];
+    var row = page[@intCast(cursor.y - 2)];
 
-    var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    const filtered_row = try row.filter_ansi_codes(allocator);
+    defer allocator.free(filtered_row);
 
-    const filtered_row = try row.filter_ansi_codes(allocator.allocator());
-    defer allocator.allocator().free(filtered_row);
-
-    var starting_index: usize = @intCast(cursor.x - 1);
+    var starting_index: usize = @intCast(cursor.x);
     var ending_index: usize = starting_index;
 
     if (current_byte == 0x20) {
-        for (filtered_row[@intCast(cursor.x - 1)..]) |byte| {
+        for (filtered_row[@intCast(cursor.x)..]) |byte| {
             if (byte >= 0x21 and byte <= 0x7E) {
                 break;
             }
@@ -364,6 +374,7 @@ fn get_word_at_cursor(page: []Row) ![]const u8 {
     } else {
         while (starting_index > 0) {
             if (filtered_row[starting_index] == 0x20) {
+                starting_index += 1;
                 break;
             }
             starting_index -= 1;
@@ -379,12 +390,16 @@ fn get_word_at_cursor(page: []Row) ![]const u8 {
         ending_index += 1;
     }
 
-    return filtered_row[starting_index..ending_index];
+    const cpy_word = try allocator.alloc(u8, ending_index - starting_index);
+    @memcpy(cpy_word, filtered_row[starting_index..ending_index]);
+
+    return cpy_word;
 }
 
 fn get_byte_at_cursor(page: []Row) !u8 {
-    var row = page[@intCast(cursor.y - 1)];
+    var row = page[@intCast(cursor.y - 2)];
     var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = allocator.deinit();
 
     const filtered_row = try row.filter_ansi_codes(allocator.allocator());
     defer allocator.allocator().free(filtered_row);
