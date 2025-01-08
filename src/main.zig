@@ -1,17 +1,21 @@
 const std = @import("std");
 const term_util = @import("term_utils.zig");
 
-const Cursor = struct { x: i32, y: i32, up: bool };
+const Cursor = struct {
+    x: i32,
+    y: i32,
+};
 
 const FileInfo = struct {
     file_name: []const u8,
-    file_size: usize,
     buffer: []const u8,
+    file_size: usize,
 };
 
 const Row = struct {
     buffer: []const u8,
     index: usize = 0,
+
     fn next(self: *Row) ?u8 {
         const index = self.index;
         var in_ansi_code = false;
@@ -47,7 +51,7 @@ const Row = struct {
     }
 };
 
-var cursor: Cursor = .{ .x = 1, .y = 2, .up = false };
+var cursor: Cursor = .{ .x = 1, .y = 2 };
 
 var top_page_index: usize = 1;
 var bottom_page_index: usize = 0;
@@ -81,9 +85,17 @@ fn input_handler(page: *std.ArrayList(Row), size: term_util.TermSize) !void {
             },
             'h' => {
                 try step_cursor_left();
+
+                while (try get_byte_at_cursor(page.items[top_page_index..bottom_page_index]) == 0x20) {
+                    try step_cursor_left();
+                }
             },
             'l' => {
                 try step_cursor_right(size);
+
+                while (try get_byte_at_cursor(page.items[top_page_index..bottom_page_index]) == 0x20) {
+                    try step_cursor_right(size);
+                }
             },
             'q' => {
                 const by: []const u8 =
@@ -92,9 +104,9 @@ fn input_handler(page: *std.ArrayList(Row), size: term_util.TermSize) !void {
                 var split_val = std.mem.splitBackwards(u8, by, "x");
                 const hex_string = split_val.next().?;
 
-                const decimal = try std.fmt.parseInt(i32, hex_string, 16);
+                const decimal = try std.fmt.parseInt(u8, hex_string, 16);
 
-                try out.print("\x1B[{d};{d}H\x1B[2K Hex:{s} | Dec:{d}", .{ size.height + 2, 1, by, decimal });
+                try out.print("\x1B[{d};{d}H\x1B[2K Hex:{s} | Dec:{d} | Oct:{o} | Char:{c}", .{ size.height + 2, 1, by, decimal, decimal, decimal });
                 try out.print("\x1B[{d};{d}H", .{ cursor.y, cursor.x });
             },
             else => {},
@@ -273,7 +285,7 @@ fn handle_args() !FileInfo {
                     row += 1;
                 }
                 if (col == 0) {
-                    try out.print("\x1B[1m{d}\x1B[0m   ", .{row});
+                    try out.print("\x1B[1m{d:0>4}\x1B[0m   ", .{row});
                 }
 
                 switch (col) {
@@ -403,6 +415,8 @@ fn get_byte_at_cursor(page: []Row) !u8 {
 
     const filtered_row = try row.filter_ansi_codes(allocator.allocator());
     defer allocator.allocator().free(filtered_row);
+
+    if (cursor.x >= filtered_row.len) return 0x0;
 
     const col = filtered_row[@intCast(cursor.x)];
 
